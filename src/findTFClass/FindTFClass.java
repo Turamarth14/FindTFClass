@@ -12,16 +12,20 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 public class FindTFClass {
 
+	static boolean hierarch = false;
 	static Path tempDir;
 	static Path tftreeDir;
 	static Path fastaSeqFile;
 	static Path outFile;
+	static TFNode tfTreeRoot;
 	static List<List<Pair<Path,String>>> tfTree;
 	static List<Pair<String,String>> fastaSeqList;
 	public static void main(String[] args) {
@@ -47,18 +51,17 @@ public class FindTFClass {
 		}
 		//Creating tfTree from directory
 		try {
-			buildTFClassTree();
+			if(hierarch) {
+				buildTFClassHierarchy();
+			}
+			else {
+				buildTFClassTree();
+			}
 		}
 		catch(IOException e) {
 			System.out.println("Error while reading the tfclass tree dir");
 			System.out.println(e.getMessage());
 			return;
-		}
-		for(int i = 0; i < tfTree.size(); i++) {
-			System.out.println("TFClass-Level = " + (i+1));
-			for(Pair<Path,String> entry : tfTree.get(i)) {
-				System.out.println(entry.toString());
-			}
 		}
 		//Read sequences from fasta file
 		try {
@@ -76,11 +79,16 @@ public class FindTFClass {
 		//Classifying sequences
 		List<Pair<String,String>> resultList;
 		try {
-			System.out.println("Level 0 = " + tfTree.get(0).size());
-			System.out.println("Level 1 = " + tfTree.get(1).size());
-			System.out.println("Level 2 = " + tfTree.get(2).size());
-			System.out.println("Level 3 = " + tfTree.get(3).size());
-			resultList = classifySeqs();
+			if(hierarch) {
+				System.out.println("Level 0 = " + tfTree.get(0).size());
+				System.out.println("Level 1 = " + tfTree.get(1).size());
+				System.out.println("Level 2 = " + tfTree.get(2).size());
+				System.out.println("Level 3 = " + tfTree.get(3).size());
+				resultList = classifySeqsHierarchy();
+			}
+			else {
+				resultList = classifySeqsTree();
+			}
 		}
 		catch(IOException | InterruptedException e) {
 			System.out.println("Error while classifying the sequences");
@@ -106,7 +114,7 @@ public class FindTFClass {
 			return;
 		}
 	}
-	private static List<Pair<String,String>> classifySeqs() throws IOException,InterruptedException{
+	private static List<Pair<String,String>> classifySeqsHierarchy() throws IOException,InterruptedException{
 		List<Pair<String,String>> classifyList = new ArrayList<>();
 		int level = tfTree.size()-1;
 		//Go through all levels or until all sequences are classified
@@ -130,6 +138,42 @@ public class FindTFClass {
 			level--;
 		}
 		System.out.println("Level : " + level + " #Sequences :" + fastaSeqList.size());
+		return classifyList;
+	}
+	private static List<Pair<String,String>> classifySeqsTree() throws IOException,InterruptedException{
+		List<Pair<String,String>> classifyList = new ArrayList<>();
+		Set<TFNode> tfnodeSet = new HashSet<>(tfTreeRoot.getLeaves());
+		//Go through all levels or until all sequences are classified
+		while(!tfnodeSet.isEmpty() && !fastaSeqList.isEmpty()) {
+			System.out.println("#TFFiles : " + tfnodeSet.size() + " #Sequences :" + fastaSeqList.size());
+			List<Pair<Path,String>> tfclassFileList = new ArrayList<>();
+			for(TFNode node : tfnodeSet) {
+				for(Path file : node.getFiles()) {
+					tfclassFileList.add(new Pair<>(file,node.getTfclass()));
+				}
+			}
+			List<Pair<String,String>> resultList = classifier(fastaSeqList, tfclassFileList);
+			for(Pair<String,String> mapping : resultList) {
+				for(int i = 0; i < fastaSeqList.size(); i++) {
+					if(fastaSeqList.get(i).getFirst().equals(mapping.getFirst())) {
+						fastaSeqList.remove(i);
+						break;
+					}
+				}
+				for(Pair<Path,String> file : tfclassFileList) {
+					if(file.getFirst().getFileName().toString().equals(mapping.getSecond())){
+						classifyList.add(new Pair<>(mapping.getFirst(),file.getSecond()));
+						break;
+					}
+				}				
+			}
+			Set<TFNode> tempSet = new HashSet<>();
+			for(TFNode node : tfnodeSet) {
+				tempSet.add(node.getParent());
+			}
+			tfnodeSet = tempSet;
+		}
+		System.out.println("#TFFiles : " + tfnodeSet.size() + " #Sequences :" + fastaSeqList.size());
 		return classifyList;
 	}
 	private static List<Pair<String,String>> classifier(List<Pair<String,String>> fastaSeqs,List<Pair<Path,String>> tfclassFileList) throws IOException,InterruptedException{
@@ -251,7 +295,7 @@ public class FindTFClass {
 		}
 		return seqList;
 	}
-	private static void buildTFClassTree() throws IOException{
+	private static void buildTFClassHierarchy() throws IOException{
 		tfTree = new ArrayList<>();
 		Files.walk(tftreeDir, 1).filter(f -> (Files.isDirectory(f) && !f.equals(tftreeDir))).forEach(f ->{
 			System.out.println(f.toAbsolutePath().toString());
@@ -262,6 +306,40 @@ public class FindTFClass {
 				System.out.println("Error while reading the reading dir " + f.toString());
 				System.out.println(e.getMessage());
 				return;
+			}
+		});
+	}
+	private static void buildTFClassTree() throws IOException{
+		tfTreeRoot = new TFNode();
+		Files.walk(tftreeDir, 1).filter(f -> (Files.isDirectory(f) && !f.equals(tftreeDir))).forEach(f ->{
+			System.out.println(f.toAbsolutePath().toString());
+			try {
+				readTFClassDirTree(f,tfTreeRoot);
+			}
+			catch(IOException e) {
+				System.out.println("Error while reading the reading dir " + f.toString());
+				System.out.println(e.getMessage());
+				return;
+			}
+		});
+	}
+	private static void readTFClassDirTree(Path dir, TFNode node) throws IOException{
+		Files.walk(dir, 1).forEach(f -> {
+			if(Files.isDirectory(f) && !f.equals(dir)) {
+				try {
+					TFNode child = new TFNode(f.getFileName().toString(), node);
+					node.addChild(child);
+					readTFClassDirTree(f,child);
+				}
+				catch(IOException e) {
+					System.out.println("Error while reading the reading dir " + f.toString());
+					System.out.println(e.getMessage());
+					return;
+				}				
+			}
+			/**Assumes that there is at most one file with ending "phyml-output.fasta.txt" in each dir**/
+			else if(f.toString().endsWith("phyml-output.fasta.txt")) {
+				node.addFile(f);
 			}
 		});
 	}
@@ -339,7 +417,10 @@ public class FindTFClass {
 				outFile = Paths.get(args[i+1]);
 				i++;
 				break;
-			}			
+			case "-hierarch":
+				hierarch = true;
+				break;
+			}		
 		}
 		tftreeDir = Paths.get(args[args.length-2]);
 		fastaSeqFile = Paths.get(args[args.length-1]);
@@ -348,6 +429,7 @@ public class FindTFClass {
 		System.out.println("Usage: java -jar FindTFClass.jar {Options} tftreeDir fastaSeqFile");
 		System.out.println("Options:");
 		System.out.println("-out file\t name of outputfile (default fastaSeqFile.match)");
+		System.out.println("-hierarch\t use hierarchical structure of the tftreeDir instead of a tree (default)");
 	}
 
 }
