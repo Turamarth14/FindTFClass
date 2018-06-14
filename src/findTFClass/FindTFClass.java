@@ -13,6 +13,7 @@ import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -120,8 +121,8 @@ public class FindTFClass {
 		//Go through all levels or until all sequences are classified
 		while(tfTree.get(level).size() > 0 && !fastaSeqList.isEmpty()) {
 			System.out.println("Level : " + level + " #Sequences :" + fastaSeqList.size());
-			List<Pair<String,String>> resultList = classifier(fastaSeqList, tfTree.get(level));
-			for(Pair<String,String> mapping : resultList) {
+			List<Pair<String,Pair<String,Double>>> resultList = classifier(fastaSeqList, tfTree.get(level));
+			for(Pair<String,Pair<String,Double>> mapping : resultList) {
 				for(int i = 0; i < fastaSeqList.size(); i++) {
 					if(fastaSeqList.get(i).getFirst().equals(mapping.getFirst())) {
 						fastaSeqList.remove(i);
@@ -129,8 +130,8 @@ public class FindTFClass {
 					}
 				}
 				for(int i = 0; i < tfTree.get(level).size(); i++) {
-					if(tfTree.get(level).get(i).getFirst().getFileName().toString().equals(mapping.getSecond())) {
-						classifyList.add(new Pair<>(mapping.getFirst(),tfTree.get(level).get(i).getSecond()));
+					if(tfTree.get(level).get(i).getFirst().getFileName().toString().equals(mapping.getSecond().getFirst())) {
+						classifyList.add(new Pair<>(mapping.getFirst(),tfTree.get(level).get(i).getSecond()+"\t"+mapping.getSecond().getSecond()));
 						break;
 					}
 				}				
@@ -152,8 +153,8 @@ public class FindTFClass {
 					tfclassFileList.add(new Pair<>(file,node.getTfclass()));
 				}
 			}
-			List<Pair<String,String>> resultList = classifier(fastaSeqList, tfclassFileList);
-			for(Pair<String,String> mapping : resultList) {
+			List<Pair<String,Pair<String,Double>>> resultList = classifier(fastaSeqList, tfclassFileList);
+			for(Pair<String,Pair<String,Double>> mapping : resultList) {
 				for(int i = 0; i < fastaSeqList.size(); i++) {
 					if(fastaSeqList.get(i).getFirst().equals(mapping.getFirst())) {
 						fastaSeqList.remove(i);
@@ -161,8 +162,8 @@ public class FindTFClass {
 					}
 				}
 				for(Pair<Path,String> file : tfclassFileList) {
-					if(file.getFirst().getFileName().toString().equals(mapping.getSecond())){
-						classifyList.add(new Pair<>(mapping.getFirst(),file.getSecond()));
+					if(file.getFirst().getFileName().toString().equals(mapping.getSecond().getFirst())){
+						classifyList.add(new Pair<>(mapping.getFirst(),file.getSecond()+"\t"+mapping.getSecond().getSecond()));
 						break;
 					}
 				}				
@@ -176,8 +177,8 @@ public class FindTFClass {
 		System.out.println("#TFFiles : " + tfnodeSet.size() + " #Sequences :" + fastaSeqList.size());
 		return classifyList;
 	}
-	private static List<Pair<String,String>> classifier(List<Pair<String,String>> fastaSeqs,List<Pair<Path,String>> tfclassFileList) throws IOException,InterruptedException{
-		List<Pair<String,String>> classifyList = new ArrayList<>();
+	private static List<Pair<String,Pair<String,Double>>> classifier(List<Pair<String,String>> fastaSeqs,List<Pair<Path,String>> tfclassFileList) throws IOException,InterruptedException{
+		List<Pair<String,Pair<String,Double>>> classifyList = new ArrayList<>();
 		emptyDir(tempDir);
 		tfclassFileList.forEach(entry ->{
 			try {
@@ -247,10 +248,14 @@ public class FindTFClass {
 						if(line.trim().startsWith("E-value")) {
 							procIn.readLine();
 							line = procIn.readLine();
-							String[] strarray = line.trim().split("\\s+");
-							if(strarray.length == 9) {
-								String model = strarray[8];
-								classifyList.add(new Pair<>(query,model));
+							while(!line.trim().isEmpty()) {
+								String[] strarray = line.trim().split("\\s+");
+								if(strarray.length == 9) {
+									String model = strarray[8];
+									double score = Double.parseDouble(strarray[0]);
+									classifyList.add(new Pair<>(query,new Pair<>(model,score)));
+								}
+								line = procIn.readLine();
 							}
 							break;
 						}
@@ -324,6 +329,7 @@ public class FindTFClass {
 		});
 	}
 	private static void readTFClassDirTree(Path dir, TFNode node) throws IOException{
+		ArrayList<Path> fileList = new ArrayList<>();
 		Files.walk(dir, 1).forEach(f -> {
 			if(Files.isDirectory(f) && !f.equals(dir)) {
 				try {
@@ -339,13 +345,29 @@ public class FindTFClass {
 			}
 			/**Assumes that there is at most one file with ending "phyml-output.fasta.txt" in each dir**/
 			else if(f.toString().endsWith("phyml-output.fasta.txt")) {
-				node.addFile(f);
+				fileList.add(f);
+				
 			}
 		});
+		if(fileList.size() > 1) {
+			Iterator<Path> it = fileList.iterator();
+			while(it.hasNext()) {
+				Path temp = it.next();
+				if(temp.getFileName().toString().contains("slim")) {
+					it.remove();
+				}
+				else {
+					node.addFile(temp);
+				}
+			}
+		}
+		else if(fileList.size() == 1){
+			node.addFile(fileList.get(0));
+		}
 	}
 	private static void printResults(List<Pair<String,String>> classifyList) throws IOException{
 		PrintWriter pw = new PrintWriter(new BufferedWriter(new FileWriter(outFile.toFile())));
-		pw.println("FastaID\tTFClass");
+		pw.println("FastaID\tTFClass\tE-Value");
 		for(Pair<String,String> mapping : classifyList) {
 			pw.println(mapping.toString());
 		}
